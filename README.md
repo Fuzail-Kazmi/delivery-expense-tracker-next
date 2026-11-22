@@ -10,6 +10,12 @@ Mobile-first Next.js application for recording water deliveries, bottle prices a
 
 Date ranges include both endpoints. The opening balance carries earlier transactions forward, and the closing balance includes all activity up to the end date. Reports include bottle counts, last payment and outstanding money, and support CSV download, sharing and print to PDF.
 
+## Offline on a phone
+
+Sign in online and keep the dashboard open until **Ready for offline use** appears. Optionally use your browser's **Add to Home Screen** or **Install app** command. Open the same site or installed app on that device when offline. You can read the saved ledger, view balances and reports, and add deliveries, payments and prices. Each new entry immediately updates the local balance. The pending count shows how many entries still need to reach Neon.
+
+Keep the browser's site data until the pending count clears. The app syncs on reconnection, reopening and return to the foreground. Browsers that support Background Sync can also upload while the app is closed. Expired sessions require signing back into the same account. Editing or deleting existing records, account changes, and sign-out require a connection. Sign-out removes that account's cached ledger from the device.
+
 ## Install and deploy
 
 Use Node.js 24 and a TLS-enabled Neon PostgreSQL connection. Copy `.env.example` to `.env.local` and set `DATABASE_URL` and a strong initial `ADMIN_PASSWORD`.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   LayoutDashboard,
   Milk,
@@ -20,6 +20,18 @@ import {
   CalendarDays,
   PanelLeft,
 } from "lucide-react";
+import { useDeviceLedger } from "./use-device-ledger";
+import {
+  savedLedger,
+  enqueue,
+  exclusive,
+  localIdStart,
+  forget,
+  announce,
+  type Snapshot,
+  type NewEntry,
+} from "@/lib/offline";
+import { recordSchema } from "@/lib/entry-input";
 import { Brand } from "./brand";
 import { Overview } from "./overview";
 import Preferences, { preference, type AlertRow } from "./preferences";
@@ -94,9 +106,11 @@ const uniqueDeleteItems = (items: DeleteItem[]) => {
 export default function TrackerApp({
   initialPage,
   user,
+  cachedShell = false,
 }: {
   initialPage: Page;
   user: Account;
+  cachedShell?: boolean;
 }) {
   const [page, setPage] = useState(initialPage);
   const [dark, setDark] = useState(user.theme === "dark");
@@ -128,28 +142,56 @@ export default function TrackerApp({
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
   };
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/data", { signal: controller.signal })
-      .then(async (response) => {
-        if (response.status === 401) location.replace("/signin");
-        if (!response.ok) throw new Error("Data request failed");
-        return response.json();
-      })
-      .then((data) => {
-        setDeliveries(data.deliveries);
-        setPayments(data.payments);
-        setPrices(data.prices);
-        setAlerts(data.alerts);
-      })
-      .catch((error: Error) => {
-        if (error.name !== "AbortError") setLoadError(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
+  const owner = user.id;
+  const apply = useCallback((data: Snapshot) => {
+    setDeliveries(data.deliveries);
+    setPayments(data.payments);
+    setPrices(data.prices);
+    setAlerts(data.alerts);
+    setDark(data.user.theme === "dark");
+    setThreshold(data.user.threshold / 100);
+    setLoadError(false);
+    setLoading(false);
   }, []);
+  const failed = useCallback(() => {
+    setLoadError(true);
+    setLoading(false);
+  }, []);
+  const { pending, online, ready, issue, storage, readLocal, reload } =
+    useDeviceLedger(owner, cachedShell, apply, failed);
+
+  async function signOut() {
+    if (!navigator.onLine) {
+      flash(
+        "Reconnect to sign out and remove the saved ledger from this device.",
+      );
+      return;
+    }
+    try {
+      await exclusive(async () => {
+        if (storage && (await savedLedger(owner))?.pending) {
+          flash("Sync your pending entries before signing out.");
+          return;
+        }
+        const res = await fetch("/api/auth/logout", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Ledger-Owner": String(owner),
+          },
+          body: "{}",
+        });
+        if (!res.ok) throw Error();
+        if (storage) {
+          await forget(owner);
+          announce();
+        }
+        location.replace("/signin");
+      });
+    } catch {
+      flash("Unable to sign out. Check your connection and try again.");
+    }
+  }
 
   useEffect(() => {
     const onPopState = () => {
@@ -176,6 +218,7 @@ export default function TrackerApp({
     try {
       await preference({ action: "theme", theme: next ? "dark" : "light" });
       setDark(next);
+      if (storage) await reload();
     } catch {
       flash("Could not save the theme.");
     }
@@ -191,21 +234,6 @@ export default function TrackerApp({
       }
     }
   }
-  useEffect(() => {
-    const refresh = () => {
-      fetch("/api/preferences")
-        .then(async (r) => {
-          if (r.ok) setAlerts((await r.json()).alerts);
-        })
-        .catch(() => {});
-    };
-    window.addEventListener("focus", refresh);
-    const timer = window.setInterval(refresh, 60000);
-    return () => {
-      window.removeEventListener("focus", refresh);
-      window.clearInterval(timer);
-    };
-  }, []);
   const go = (nextPage: Page) => {
     setPage(nextPage);
     setShowAlerts(false);
@@ -220,6 +248,10 @@ export default function TrackerApp({
   };
 
   const openEdit = (type: EntryType, record: EditableRecord) => {
+    if (!online || record.id >= localIdStart) {
+      flash("Reconnect and sync before editing this record.");
+      return;
+    }
     setEditingRecord(record);
     setModal(type);
   };
@@ -256,9 +288,40 @@ export default function TrackerApp({
             }
           : { ...common, price: Number(form.get("price")) };
     try {
+      if (!editingRecord && storage) {
+        const valid = recordSchema.safeParse(payload);
+        if (!valid.success) throw Error(valid.error.issues[0].message);
+        await exclusive(() => enqueue(owner, valid.data as NewEntry));
+        await readLocal();
+        announce();
+        if (navigator.onLine) await reload();
+        const waiting = (await savedLedger(owner))?.pending;
+        if (waiting && "serviceWorker" in navigator) {
+          void navigator.serviceWorker
+            .getRegistration()
+            .then((reg) =>
+              (
+                reg as
+                  | (ServiceWorkerRegistration & {
+                      sync?: { register: (tag: string) => Promise<void> };
+                    })
+                  | undefined
+              )?.sync?.register("watertracker-entries"),
+            )
+            .catch(() => {});
+        }
+        closeEditor();
+        flash(
+          waiting ? "Saved on this device. Waiting to sync." : "Record saved.",
+        );
+        return;
+      }
       const response = await fetch("/api/data", {
         method: editingRecord ? "PUT" : "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "X-Ledger-Owner": String(owner),
+        },
         body: JSON.stringify(payload),
       });
       const result = await response.json();
@@ -283,6 +346,7 @@ export default function TrackerApp({
             ? current.map((item) => (item.id === record.id ? record : item))
             : [...current, record],
         );
+      if (storage) await reload();
       const action = editingRecord ? "updated" : "saved";
       closeEditor();
       flash(`${type[0].toUpperCase()}${type.slice(1)} ${action}`);
@@ -299,7 +363,10 @@ export default function TrackerApp({
     try {
       const response = await fetch("/api/data", {
         method: "DELETE",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "X-Ledger-Owner": String(owner),
+        },
         body: JSON.stringify({ items: uniqueDeleteItems(pendingDelete.items) }),
       });
       if (!response.ok) throw new Error("Delete failed");
@@ -329,6 +396,7 @@ export default function TrackerApp({
       flash(
         `${uniqueDeleteItems(pendingDelete.items).length} record${pendingDelete.items.length === 1 ? "" : "s"} deleted`,
       );
+      if (storage) await reload();
       setPendingDelete(null);
     } catch {
       flash("Could not delete the selected records");
@@ -338,6 +406,10 @@ export default function TrackerApp({
   }
 
   const requestDelete = (items: DeleteItem[], context: string) => {
+    if (!online || items.some((item) => item.id >= localIdStart)) {
+      flash("Reconnect and sync before deleting these records.");
+      return;
+    }
     const uniqueItems = uniqueDeleteItems(items);
     setPendingDelete({
       title:
@@ -417,19 +489,7 @@ export default function TrackerApp({
             </b>
             <small>{user.email}</small>
           </p>
-          <button
-            title="Sign out"
-            aria-label="Sign out"
-            onClick={async () => {
-              const res = await fetch("/api/auth/logout", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: "{}",
-              });
-              if (res.ok) location.replace("/signin");
-              else flash("Unable to sign out.");
-            }}
-          >
+          <button title="Sign out" aria-label="Sign out" onClick={signOut}>
             <LogOut size={17} />
           </button>
         </div>
@@ -495,6 +555,30 @@ export default function TrackerApp({
           )}
         </header>
         <div className="content">
+          {!loading && !loadError && (
+            <div className="sync-strip" role="status">
+              <span>
+                {!storage
+                  ? "Online only · Device storage unavailable"
+                  : !online
+                    ? "Offline · Saved on this device"
+                    : issue ||
+                      (!ready
+                        ? "Preparing offline access…"
+                        : "Ready for offline use")}
+              </span>
+              {pending > 0 && (
+                <b>
+                  {pending} pending {pending === 1 ? "entry" : "entries"}
+                </b>
+              )}
+              {(pending > 0 || issue) && online && (
+                <button className="link" onClick={() => void reload()}>
+                  Sync now
+                </button>
+              )}
+            </div>
+          )}
           {page !== "dashboard" && (
             <div className="title-row">
               <div>
@@ -1542,6 +1626,7 @@ function EntryDialog({
               <input
                 required
                 min="1"
+                max="10000"
                 name="qty"
                 type="number"
                 defaultValue={delivery?.qty}
@@ -1552,6 +1637,7 @@ function EntryDialog({
               <input
                 required
                 min="0.01"
+                max="9999999"
                 step="0.01"
                 name="price"
                 key={date}
@@ -1568,6 +1654,7 @@ function EntryDialog({
               <input
                 required
                 min="0.01"
+                max="9999999"
                 step="0.01"
                 name="amount"
                 type="number"
@@ -1591,6 +1678,7 @@ function EntryDialog({
             <input
               required
               min="0.01"
+              max="9999999"
               step="0.01"
               name="price"
               type="number"

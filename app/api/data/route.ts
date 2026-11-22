@@ -1,35 +1,10 @@
 import { z } from "zod";
 import { account } from "@/lib/auth";
-import { lockLedger, due, notices, recordCrossing, today } from "@/lib/store";
+import { digest, lockLedger, due, notices, recordCrossing } from "@/lib/store";
 import { query, transaction } from "@/lib/database";
 import { sendAlert } from "@/lib/push";
 
-const amount = z.number().positive().max(9999999).multipleOf(0.01);
-const common = {
-  id: z.number().int().positive().optional(),
-  notes: z.string().max(500).default(""),
-  date: z.iso.date(),
-};
-const pastDate = z.iso
-  .date()
-  .refine((date) => date <= today(), "Use today or an earlier date.");
-const recordSchema = z.discriminatedUnion("type", [
-  z.object({
-    ...common,
-    date: pastDate,
-    type: z.literal("delivery"),
-    price: amount,
-    qty: z.number().int().min(1).max(10000),
-  }),
-  z.object({
-    ...common,
-    date: pastDate,
-    type: z.literal("payment"),
-    amount,
-    method: z.enum(["Cash", "Easypaisa", "JazzCash", "Bank Transfer"]),
-  }),
-  z.object({ ...common, type: z.literal("price"), price: amount }),
-]);
+import { recordSchema } from "@/lib/entry-input";
 const deletion = z.object({
   items: z
     .array(
@@ -43,9 +18,12 @@ const deletion = z.object({
 });
 const fail = (error: string, status: number) =>
   Response.json({ error }, { status });
-export async function GET() {
+export async function GET(req: Request) {
   const user = await account();
   if (!user) return fail("Please sign in.", 401);
+  const requestedOwner = req.headers.get("X-Ledger-Owner");
+  if (requestedOwner && requestedOwner !== String(user.id))
+    return fail("Sign in to the account that saved these records.", 403);
   const entries = (
     await query(
       "SELECT id,date::text,notes,type,qty,method,cents::float8/100 AS unit FROM tracker.entries WHERE owner=$1 ORDER BY date,id",
@@ -53,6 +31,7 @@ export async function GET() {
     )
   ).rows;
   return Response.json({
+    user,
     deliveries: entries
       .filter((r) => r.type === "delivery")
       .map(({ id, date, notes, qty, unit }) => ({
@@ -80,6 +59,17 @@ export async function GET() {
 async function mutate(req: Request) {
   const user = await account();
   if (!user) return fail("Please sign in.", 401);
+  const requestedOwner = req.headers.get("X-Ledger-Owner");
+  if (requestedOwner && requestedOwner !== String(user.id))
+    return fail("Sign in to the account that saved these records.", 403);
+  const key = req.headers.get("Idempotency-Key");
+  if (
+    key &&
+    (req.method !== "POST" ||
+      !requestedOwner ||
+      !z.uuid().safeParse(key).success)
+  )
+    return fail("Invalid sync request.", 400);
   const body = await req.json().catch(() => null);
   const input =
     req.method === "DELETE"
@@ -89,6 +79,22 @@ async function mutate(req: Request) {
   const data = input.data;
   const result = await transaction(async (client) => {
     const limit = await lockLedger(user.id, client);
+    if (key) {
+      const previous = await query(
+        "SELECT entry_id,fingerprint FROM tracker.entry_receipts WHERE owner=$1 AND key=$2",
+        [user.id, key],
+        client,
+      );
+      if (previous.rowCount) {
+        if (previous.rows[0].fingerprint !== digest(JSON.stringify(data)))
+          return { conflict: true } as const;
+        return {
+          record: { ...data, id: previous.rows[0].entry_id },
+          alerts: await notices(user.id, client),
+          alert: undefined,
+        };
+      }
+    }
     const before = limit ? await due(user.id, client) : 0;
     let record;
     if ("items" in data) {
@@ -122,10 +128,18 @@ async function mutate(req: Request) {
       if (!saved.rowCount) return null;
       record = { ...data, id: saved.rows[0].id };
     }
+    if (key && record)
+      await query(
+        "INSERT INTO tracker.entry_receipts(owner,key,entry_id,fingerprint) VALUES($1,$2,$3,$4)",
+        [user.id, key, record.id, digest(JSON.stringify(data))],
+        client,
+      );
     const alert = await recordCrossing(user.id, before, limit, client);
     return { record, alert, alerts: await notices(user.id, client) };
   });
   if (!result) return fail("Record not found.", 404);
+  if ("conflict" in result)
+    return fail("This sync key belongs to a different entry.", 409);
   if (result.alert) await sendAlert(user.id, result.alert);
   return Response.json(result, { status: req.method === "POST" ? 201 : 200 });
 }

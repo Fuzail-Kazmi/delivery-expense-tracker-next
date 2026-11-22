@@ -23,6 +23,12 @@ export default function AuthForm() {
     reveal(false);
   }
   useEffect(() => {
+    if (new URLSearchParams(location.search).get("reason") === "sync") {
+      const frame = requestAnimationFrame(() =>
+        setNotice("Sign in to the original account to sync its saved entries."),
+      );
+      return () => cancelAnimationFrame(frame);
+    }
     const hash = new URLSearchParams(location.hash.slice(1));
     if (hash.has("reset")) {
       const frame = requestAnimationFrame(() => {

@@ -120,6 +120,51 @@ test("authenticated ledger, threshold alerts, theme, isolation and recovery", as
     await (await call("/dashboard", null, admin)).text(),
     /class="app dark"/,
   );
+  const ownerHeaders = {
+    "Content-Type": "application/json",
+    cookie: admin,
+    "Idempotency-Key": randomUUID(),
+    "X-Ledger-Owner": String(data.user.id),
+  };
+  const replay = () =>
+    fetch(base + "/api/data", {
+      method: "POST",
+      headers: ownerHeaders,
+      body: JSON.stringify({ type: "price", date: "2026-02-01", price: 151 }),
+    });
+  const copies = await Promise.all([replay(), replay()]);
+  const ids = await Promise.all(
+    copies.map(async (res) => (await res.json()).record.id),
+  );
+  assert.equal(ids[0], ids[1]);
+  assert.equal(
+    (await (await call("/api/data", null, admin)).json()).prices.length,
+    1,
+  );
+  await call(
+    "/api/data",
+    { items: [{ type: "price", id: ids[0] }] },
+    admin,
+    "DELETE",
+  );
+  await replay();
+  assert.equal(
+    (await (await call("/api/data", null, admin)).json()).prices.length,
+    0,
+  );
+  assert.equal(
+    (
+      await fetch(base + "/api/data", {
+        method: "POST",
+        headers: {
+          ...ownerHeaders,
+          "X-Ledger-Owner": String(data.user.id + 1),
+        },
+        body: JSON.stringify({ type: "price", date: "2026-02-01", price: 22 }),
+      })
+    ).status,
+    403,
+  );
   const credentials = { email: "test@example.com", password: "test-password" };
   const signup = await call("/api/auth/signup", credentials);
   assert.equal(signup.status, 201);

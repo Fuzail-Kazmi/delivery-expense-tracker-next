@@ -31,6 +31,9 @@ export async function POST(
   try {
     const body = await req.json();
     if (action === "logout") {
+      const intended = req.headers.get("X-Ledger-Owner");
+      if (intended && String((await account())?.id) !== intended)
+        return fail("The active account has changed.", 403);
       await logout();
       return Response.json({ ok: true });
     }

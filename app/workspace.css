@@ -1103,3 +1103,24 @@ header {
     font-weight: 650;
   }
 }
+
+.sync-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0 0 12px;
+}
+.sync-strip b {
+  color: var(--text);
+}
+.sync-strip .link {
+  font-size: inherit;
+}
+@media print {
+  .sync-strip {
+    display: none;
+  }
+}

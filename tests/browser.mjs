@@ -55,7 +55,7 @@ try {
     viewport: { width: 390, height: 844 },
     permissions: ["clipboard-read", "clipboard-write"],
   });
-  const page = await context.newPage();
+  let page = await context.newPage();
   page.setDefaultTimeout(25000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -182,6 +182,91 @@ try {
       "Layout overflow at " + width,
     );
   }
+  await page.getByText("Ready for offline use", { exact: true }).waitFor();
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await context.setOffline(true);
+  await page.getByText("Offline · Saved on this device").waitFor();
+  await button("Add bottles").click();
+  await label("Date").fill("2026-03-01");
+  await label("Bottle quantity").fill("2");
+  await button("Save record").click();
+  await page.getByText("1 pending entry", { exact: true }).waitFor();
+  await button("Record payment").click();
+  await label("Date").fill("2026-03-02");
+  await label("Amount paid").fill("200");
+  await button("Save record").click();
+  await page.getByText("2 pending entries", { exact: true }).waitFor();
+  assert.equal(await page.locator(".due-card>strong").innerText(), "Rs. 600");
+  await page.close();
+  page = await context.newPage();
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(base + "/dashboard");
+  await page.getByText("2 pending entries", { exact: true }).waitFor();
+  assert.equal(await page.locator(".due-card>strong").innerText(), "Rs. 600");
+  await nav("Bottle prices");
+  await button("Add price").click();
+  await label("Date").fill("2026-04-01");
+  await label("Bottle price").fill("175");
+  await button("Save record").click();
+  await page.getByText("3 pending entries", { exact: true }).waitFor();
+  await context.setOffline(false);
+  await page.getByText("Ready for offline use", { exact: true }).waitFor();
+  await page.locator(".sync-strip b").waitFor({ state: "hidden" });
+  const fresh = await (await context.request.get(base + "/api/data")).json();
+  assert.deepEqual(
+    [fresh.deliveries.length, fresh.payments.length, fresh.prices.length],
+    [2, 2, 2],
+  );
+  assert.equal(fresh.payments.find((x) => x.date === "2026-03-02").amount, 200);
+  await page.goto(base + "/dashboard");
+  await page.getByText("Ready for offline use", { exact: true }).waitFor();
+  assert.equal(await page.locator(".due-card>strong").innerText(), "Rs. 600");
+  // A changed login must never apply another person's offline payment.
+  await context.setOffline(true);
+  await button("Record payment").click();
+  await label("Amount paid").fill("75");
+  await button("Save record").click();
+  await page.getByText("1 pending entry", { exact: true }).waitFor();
+  const second = await context.request.post(base + "/api/auth/signup", {
+    data: { email: "other-device-user@example.com", password: randomUUID() },
+  });
+  assert.equal(second.status(), 201);
+  await context.setOffline(false);
+  await page.waitForURL("**/signin*");
+  await page.goto(base + "/dashboard");
+  await page.getByText("Ready for offline use", { exact: true }).waitFor();
+  assert.equal(await page.locator(".due-card>strong").innerText(), "Rs. 0");
+  assert.equal(
+    (await (await context.request.get(base + "/api/data")).json()).payments
+      .length,
+    0,
+  );
+  const signin = await context.request.post(base + "/api/auth/signin", {
+    data: { email: "admin@sfk.com", password: env.ADMIN_PASSWORD },
+  });
+  assert.equal(signin.status(), 200);
+  await page.goto(base + "/dashboard");
+  await page.waitForFunction(
+    () => document.querySelector(".due-card>strong")?.textContent === "Rs. 525",
+  );
+  assert.equal(
+    (await (await context.request.get(base + "/api/data")).json()).payments
+      .length,
+    3,
+  );
+  if (await button("Open menu").isVisible()) await button("Open menu").click();
+  await button("Sign out").click();
+  await page.waitForURL("**/signin");
+  await context.setOffline(true);
+  await page.goto(base + "/dashboard");
+  await page
+    .getByText(
+      "Connect to the internet and sign in once to set up offline access on this device.",
+    )
+    .waitFor();
+  console.log(
+    "Offline mobile flow passed: saved deliveries, payments and prices; reopened without internet; reconciled with Neon; signed-out local ledger cleared.",
+  );
   assert.deepEqual(errors, []);
   console.log(
     "Browser passed: all seven tabs, entry and pricing, partial payment, date filter, dated threshold alert, search, cancellation, CSV/share/PDF, saved theme, and four screen widths.",

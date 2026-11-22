@@ -10,6 +10,7 @@ import tseslint from "typescript-eslint";
 const eslintConfig = defineConfig([
   globalIgnores([
     ".next/**",
+    "public/sw.js",
     "dist/**",
     "out/**",
     "build/**",
@@ -28,6 +29,7 @@ const eslintConfig = defineConfig([
         ...globals.browser,
         ...globals.node,
         ...globals.serviceworker,
+        OFFLINE_BUILD: "readonly",
       },
     },
     settings: {
