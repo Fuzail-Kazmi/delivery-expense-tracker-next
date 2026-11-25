@@ -11,6 +11,7 @@ const pages = new Set([
   "ledger",
   "reports",
   "settings",
+  "users",
 ]);
 self.addEventListener("install", (event) =>
   event.waitUntil(
@@ -70,6 +71,15 @@ self.addEventListener("fetch", (event) => {
           return (await caches.open(cacheName))
             .match("/offline")
             .then((r) => r || fetch(req));
+        if (
+          !url.searchParams.has("verify") &&
+          pages.has(route) &&
+          route !== "signin" &&
+          (await activeOwner().catch(() => null))
+        ) {
+          const shell = await (await caches.open(cacheName)).match("/offline");
+          if (shell) return shell;
+        }
         try {
           return await fetch(req);
         } catch {

@@ -24,6 +24,7 @@ import { useDeviceLedger } from "./use-device-ledger";
 import {
   savedLedger,
   enqueue,
+  queueDelete,
   exclusive,
   localIdStart,
   forget,
@@ -32,6 +33,8 @@ import {
   type NewEntry,
 } from "@/lib/offline";
 import { recordSchema } from "@/lib/entry-input";
+import { AccountPanel } from "./account-panel";
+import { Users } from "lucide-react";
 import { Brand } from "./brand";
 import { Overview } from "./overview";
 import Preferences, { preference, type AlertRow } from "./preferences";
@@ -57,6 +60,7 @@ export type Page =
   | "pricing"
   | "ledger"
   | "reports"
+  | "users"
   | "settings";
 type EntryType = "delivery" | "payment" | "price";
 type EditableRecord = Delivery | Payment | BottlePrice;
@@ -70,6 +74,7 @@ const pages = [
   { id: "pricing", icon: Tags, label: "Bottle prices" },
   { id: "ledger", icon: NotebookText, label: "Ledger" },
   { id: "reports", icon: ChartNoAxesCombined, label: "Reports" },
+  { id: "users", icon: Users, label: "Users" },
   { id: "settings", icon: Settings2, label: "Settings" },
 ] as const;
 
@@ -142,8 +147,10 @@ export default function TrackerApp({
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
   };
 
+  const [profile, setProfile] = useState(user);
   const owner = user.id;
   const apply = useCallback((data: Snapshot) => {
+    setProfile(data.user);
     setDeliveries(data.deliveries);
     setPayments(data.payments);
     setPrices(data.prices);
@@ -218,7 +225,7 @@ export default function TrackerApp({
     try {
       await preference({ action: "theme", theme: next ? "dark" : "light" });
       setDark(next);
-      if (storage) await reload();
+      if (storage) void reload();
     } catch {
       flash("Could not save the theme.");
     }
@@ -291,10 +298,11 @@ export default function TrackerApp({
       if (!editingRecord && storage) {
         const valid = recordSchema.safeParse(payload);
         if (!valid.success) throw Error(valid.error.issues[0].message);
-        await exclusive(() => enqueue(owner, valid.data as NewEntry));
+        await enqueue(owner, valid.data as NewEntry);
+        closeEditor();
         await readLocal();
         announce();
-        if (navigator.onLine) await reload();
+        if (navigator.onLine) void reload();
         const waiting = (await savedLedger(owner))?.pending;
         if (waiting && "serviceWorker" in navigator) {
           void navigator.serviceWorker
@@ -310,7 +318,6 @@ export default function TrackerApp({
             )
             .catch(() => {});
         }
-        closeEditor();
         flash(
           waiting ? "Saved on this device. Waiting to sync." : "Record saved.",
         );
@@ -346,7 +353,7 @@ export default function TrackerApp({
             ? current.map((item) => (item.id === record.id ? record : item))
             : [...current, record],
         );
-      if (storage) await reload();
+      if (storage) void reload();
       const action = editingRecord ? "updated" : "saved";
       closeEditor();
       flash(`${type[0].toUpperCase()}${type.slice(1)} ${action}`);
@@ -361,6 +368,28 @@ export default function TrackerApp({
     if (!pendingDelete) return;
     setDeleting(true);
     try {
+      if (storage) {
+        await queueDelete(owner, uniqueDeleteItems(pendingDelete.items));
+        setPendingDelete(null);
+        await readLocal();
+        announce();
+        if (navigator.onLine) void reload();
+        else
+          void navigator.serviceWorker
+            ?.getRegistration()
+            .then((r) =>
+              (
+                r as
+                  | (ServiceWorkerRegistration & {
+                      sync?: { register: (tag: string) => Promise<void> };
+                    })
+                  | undefined
+              )?.sync?.register("watertracker-entries"),
+            )
+            .catch(() => {});
+        flash("Deletion saved.");
+        return;
+      }
       const response = await fetch("/api/data", {
         method: "DELETE",
         headers: {
@@ -396,7 +425,7 @@ export default function TrackerApp({
       flash(
         `${uniqueDeleteItems(pendingDelete.items).length} record${pendingDelete.items.length === 1 ? "" : "s"} deleted`,
       );
-      if (storage) await reload();
+      if (storage) void reload();
       setPendingDelete(null);
     } catch {
       flash("Could not delete the selected records");
@@ -406,10 +435,6 @@ export default function TrackerApp({
   }
 
   const requestDelete = (items: DeleteItem[], context: string) => {
-    if (!online || items.some((item) => item.id >= localIdStart)) {
-      flash("Reconnect and sync before deleting these records.");
-      return;
-    }
     const uniqueItems = uniqueDeleteItems(items);
     setPendingDelete({
       title:
@@ -467,27 +492,27 @@ export default function TrackerApp({
         <Brand />
         <div className="workspace-tag">Delivery workspace</div>
         <nav>
-          {pages.map((item) => (
-            <button
-              key={item.id}
-              className={page === item.id ? "active" : ""}
-              aria-current={page === item.id ? "page" : undefined}
-              onClick={() => go(item.id)}
-            >
-              <item.icon size={19} />
-              {item.label}
-            </button>
-          ))}
+          {pages
+            .filter((item) => item.id !== "users" || profile.admin)
+            .map((item) => (
+              <button
+                key={item.id}
+                className={page === item.id ? "active" : ""}
+                aria-current={page === item.id ? "page" : undefined}
+                onClick={() => go(item.id)}
+              >
+                <item.icon size={19} />
+                {item.label}
+              </button>
+            ))}
         </nav>
         <div className="profile">
-          <span className="avatar">{user.email.slice(0, 2).toUpperCase()}</span>
+          <span className="avatar">
+            {profile.email.slice(0, 2).toUpperCase()}
+          </span>
           <p>
-            <b>
-              {user.email === "admin@sfk.com"
-                ? "Administrator"
-                : "Personal account"}
-            </b>
-            <small>{user.email}</small>
+            <b>{profile.admin ? "Administrator" : "Personal account"}</b>
+            <small>{profile.email}</small>
           </p>
           <button title="Sign out" aria-label="Sign out" onClick={signOut}>
             <LogOut size={17} />
@@ -594,6 +619,7 @@ export default function TrackerApp({
                         "Follow each charge, payment and running balance.",
                       reports:
                         "Download or share your water supply statements.",
+                      users: "Manage access to your app.",
                       settings: "Manage your account preferences.",
                     }[page]
                   }
@@ -696,6 +722,16 @@ export default function TrackerApp({
               remove={requestDelete}
             />
           ) : null}
+          {!loading &&
+            !loadError &&
+            (page === "settings" || (page === "users" && profile.admin)) && (
+              <AccountPanel
+                key={page}
+                users={page === "users"}
+                online={online}
+                owner={owner}
+              />
+            )}
           {!loading && !loadError && page === "settings" ? (
             <Preferences
               dark={dark}
@@ -1589,7 +1625,14 @@ function EntryDialog({
   const price = effectivePrice(prices, date)?.price || 0;
   const recordPrice = record && "price" in record ? record.price : undefined;
   return (
-    <div className="backdrop" ref={dialogRef} role="presentation">
+    <div
+      className="backdrop"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) close();
+      }}
+      ref={dialogRef}
+      role="presentation"
+    >
       <form
         className="dialog"
         role="dialog"
@@ -1721,7 +1764,14 @@ function ConfirmDialog({
 }) {
   const dialogRef = useModalKeyboard(cancel);
   return (
-    <div className="backdrop" ref={dialogRef}>
+    <div
+      className="backdrop"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) cancel();
+      }}
+      ref={dialogRef}
+    >
       <div
         className="confirm-dialog"
         role="alertdialog"

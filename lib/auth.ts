@@ -11,6 +11,7 @@ export type Account = {
   email: string;
   theme: "light" | "dark";
   threshold: number;
+  admin: boolean;
 };
 let secret: Uint8Array | undefined;
 async function key() {
@@ -52,6 +53,12 @@ export async function issue(owner: number, secure: boolean) {
     owner,
     expires,
   ]);
+  (await cookies()).set("water_profile", String(owner), {
+    sameSite: "lax",
+    secure,
+    path: "/",
+    maxAge: lifetime,
+  });
   (await cookies()).set(cookieName, token, {
     httpOnly: true,
     sameSite: "lax",
@@ -80,7 +87,7 @@ export async function account(): Promise<Account | null> {
   return (
     (
       await query<Account>(
-        "SELECT u.id,u.email,u.theme,u.threshold::float8 FROM tracker.users u JOIN tracker.sessions s ON s.owner=u.id WHERE s.id=$1 AND u.id=$2 AND s.expires>$3",
+        "SELECT u.id,u.email,u.admin,u.theme,u.threshold::float8 FROM tracker.users u JOIN tracker.sessions s ON s.owner=u.id WHERE s.id=$1 AND u.id=$2 AND s.expires>$3",
         [c.jti, Number(c.sub), Math.floor(Date.now() / 1000)],
       )
     ).rows[0] ?? null
@@ -90,6 +97,7 @@ export async function logout() {
   const c = await claims();
   if (c?.jti) await query("DELETE FROM tracker.sessions WHERE id=$1", [c.jti]);
   (await cookies()).delete(cookieName);
+  (await cookies()).delete("water_profile");
 }
 export async function allowAttempt(key: string, limit: number) {
   const now = Date.now();

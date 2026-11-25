@@ -58,15 +58,18 @@ export async function POST(
       ]);
       return Response.json({ recovery });
     }
-    const email = emailField.parse(body.email);
+    const email =
+      action === "signin"
+        ? z.string().trim().toLowerCase().min(1).max(254).parse(body.email)
+        : emailField.parse(body.email);
     if (
       !(await allowAttempt(action + ":" + email, action === "forgot" ? 4 : 20))
     )
       return fail("Too many requests. Try again in 15 minutes.", 429);
     const user = (
       await query(
-        "SELECT id,password,recovery FROM tracker.users WHERE email=$1",
-        [email],
+        "SELECT id,password,recovery FROM tracker.users WHERE email=$1 OR (username=$1 AND $2)",
+        [email, action === "signin"],
       )
     ).rows[0];
     const secure =
@@ -77,11 +80,23 @@ export async function POST(
       const hash = await hashPassword(passwordField.parse(body.password));
       const recovery = randomBytes(20).toString("hex");
       const result = await query(
-        "INSERT INTO tracker.users(email,password,recovery) VALUES($1,$2,$3) ON CONFLICT(email) DO NOTHING RETURNING id",
-        [email, hash, digest(recovery)],
+        "INSERT INTO tracker.users(email,password,recovery,username) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id",
+        [
+          email,
+          hash,
+          digest(recovery),
+          body.username
+            ? z
+                .string()
+                .trim()
+                .toLowerCase()
+                .regex(/^[a-z0-9_][a-z0-9_.-]{2,31}$/)
+                .parse(body.username)
+            : null,
+        ],
       );
       if (!result.rowCount)
-        return fail("This email is already registered.", 409);
+        return fail("Email or username is already registered.", 409);
       await issue(result.rows[0].id, secure);
       return Response.json({ recovery }, { status: 201 });
     }

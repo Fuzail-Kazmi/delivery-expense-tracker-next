@@ -49,7 +49,12 @@ export default function AuthForm() {
       const res = await fetch("/api/auth/" + mode, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password: form.get("password"), code }),
+        body: JSON.stringify({
+          email,
+          username: form.get("username"),
+          password: form.get("password"),
+          code,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -143,12 +148,24 @@ export default function AuthForm() {
           ) : (
             <>
               <form className="fields" key={mode} onSubmit={submit}>
+                {mode === "signup" && (
+                  <label>
+                    Username
+                    <input
+                      name="username"
+                      autoComplete="username"
+                      required
+                      minLength={3}
+                      maxLength={32}
+                    />
+                  </label>
+                )}
                 <label>
-                  Email address
+                  {mode === "signin" ? "Email or username" : "Email address"}
                   <input
                     required
-                    type="email"
-                    autoComplete="email"
+                    type={mode === "signin" ? "text" : "email"}
+                    autoComplete={mode === "signin" ? "username" : "email"}
                     placeholder="you@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}

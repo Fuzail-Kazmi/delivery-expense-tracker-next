@@ -82,10 +82,48 @@ try {
     await page.getByRole("dialog").waitFor({ state: "hidden" });
   };
   await page.goto(base);
-  await label("Email address").fill("admin@sfk.com");
+  await label("Email or username").fill("admin@sfk.com");
   await label("Password").fill(env.ADMIN_PASSWORD);
   await button("Sign in").click();
   await button("Add bottles").waitFor();
+  await nav("Users");
+  await label("Username").fill("qa_member");
+  await label("Email address").fill("member@example.com");
+  await label("New password").fill("MemberPass12345");
+  await button("Create user").click();
+  await page.getByText("User created.").waitFor();
+  const member = await browser.newContext();
+  const m = await member.newPage();
+  await m.goto(base + "/signin");
+  await m.getByLabel("Email or username").fill("QA_MEMBER");
+  await m.getByLabel("Password", { exact: true }).fill("MemberPass12345");
+  await m.getByRole("button", { name: "Sign in", exact: true }).click();
+  await m.locator(".due-card").waitFor();
+  assert.equal((await member.request.get(base + "/api/account")).status(), 403);
+  await m.goto(base + "/settings");
+  const emailForm = m
+    .locator("form")
+    .filter({ has: m.getByLabel("New email address") });
+  await emailForm.getByLabel("Current password").fill("MemberPass12345");
+  await emailForm.getByLabel("New email address").fill("updated@example.com");
+  await emailForm.getByRole("button").click();
+  await m.getByText("updated@example.com", { exact: true }).waitFor();
+  const passForm = m
+    .locator("form")
+    .filter({ has: m.getByRole("button", { name: "Change password" }) });
+  await passForm.getByLabel("Current password").fill("MemberPass12345");
+  await passForm.getByLabel("New password").fill("ChangedPass12345");
+  await passForm.getByRole("button").click();
+  await m.getByText("Account updated.").waitFor();
+  assert.equal(
+    (
+      await member.request.post(base + "/api/auth/signin", {
+        data: { email: "updated@example.com", password: "ChangedPass12345" },
+      })
+    ).status(),
+    200,
+  );
+  await member.close();
   await nav("Bottle prices");
   await button("Add price").click();
   await label("Date").fill("2026-01-01");
@@ -253,6 +291,36 @@ try {
     (await (await context.request.get(base + "/api/data")).json()).payments
       .length,
     3,
+  );
+  await context.setOffline(true);
+  for (const name of ["Add bottles", "Record payment"]) {
+    await button(name).click();
+    await page.locator(".backdrop").click({ position: { x: 2, y: 2 } });
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+  }
+  await nav("Payments");
+  await label("Select all payments").check();
+  await button("Delete selected (3)").click();
+  await page.locator(".backdrop").click({ position: { x: 2, y: 2 } });
+  await page.getByRole("alertdialog").waitFor({ state: "hidden" });
+  await button("Delete selected (3)").click();
+  await button("Yes, delete").click();
+  await page.getByRole("alertdialog").waitFor({ state: "hidden" });
+  await page.getByText("1 pending entry", { exact: true }).waitFor();
+  const start = performance.now();
+  await page.goto(base + "/dashboard");
+  await page.locator(".due-card").waitFor();
+  console.log(
+    "Cached offline dashboard navigation:",
+    Math.round(performance.now() - start),
+    "ms",
+  );
+  await context.setOffline(false);
+  await page.locator(".sync-strip b").waitFor({ state: "hidden" });
+  assert.equal(
+    (await (await context.request.get(base + "/api/data")).json()).payments
+      .length,
+    0,
   );
   if (await button("Open menu").isVisible()) await button("Open menu").click();
   await button("Sign out").click();

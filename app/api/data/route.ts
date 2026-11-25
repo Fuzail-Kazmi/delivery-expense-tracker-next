@@ -24,12 +24,14 @@ export async function GET(req: Request) {
   const requestedOwner = req.headers.get("X-Ledger-Owner");
   if (requestedOwner && requestedOwner !== String(user.id))
     return fail("Sign in to the account that saved these records.", 403);
-  const entries = (
-    await query(
+  const [result, alerts] = await Promise.all([
+    query(
       "SELECT id,date::text,notes,type,qty,method,cents::float8/100 AS unit FROM tracker.entries WHERE owner=$1 ORDER BY date,id",
       [user.id],
-    )
-  ).rows;
+    ),
+    notices(user.id),
+  ]);
+  const entries = result.rows;
   return Response.json({
     user,
     deliveries: entries
@@ -53,7 +55,7 @@ export async function GET(req: Request) {
     prices: entries
       .filter((r) => r.type === "price")
       .map(({ id, date, notes, unit }) => ({ id, date, notes, price: unit })),
-    alerts: await notices(user.id),
+    alerts,
   });
 }
 async function mutate(req: Request) {

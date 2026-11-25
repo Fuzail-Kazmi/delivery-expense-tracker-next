@@ -15,7 +15,17 @@ export type Snapshot = {
   prices: BottlePrice[];
   alerts: AlertRow[];
 };
-type Draft = { owner: number; key: string; entry: NewEntry; id?: number };
+type Item = { type: NewEntry["type"]; id: number };
+type Deletion = {
+  type: "delete";
+  items: (Item & { source?: { key: string; entry: NewEntry } })[];
+};
+type Draft = {
+  owner: number;
+  key: string;
+  entry: NewEntry | Deletion;
+  id?: number;
+};
 interface DeviceDB extends DBSchema {
   state: { key: string; value: number };
   ledgers: { key: number; value: Snapshot };
@@ -48,6 +58,14 @@ export async function savedLedger(owner: number) {
   for (const item of pending) {
     const e = item.entry,
       id = localIdStart + item.id!;
+    if (e.type === "delete") {
+      const ids = new Set(e.items.map((x) => x.id));
+      for (const field of ["deliveries", "payments", "prices"] as const) {
+        const list = snapshot[field];
+        for (let i = list.length - 1; i >= 0; i--)
+          if (ids.has(list[i].id)) list.splice(i, 1);
+      }
+    }
     if (e.type === "delivery") snapshot.deliveries.push({ ...e, id });
     if (e.type === "payment") snapshot.payments.push({ ...e, id });
     if (e.type === "price") snapshot.prices.push({ ...e, id });
@@ -59,6 +77,27 @@ export async function enqueue(owner: number, entry: NewEntry) {
   if ((await tx.objectStore("state").get("active")) !== owner)
     throw new AccountChanged("Reconnect and sign in to save this entry.");
   await tx.objectStore("queue").add({ owner, entry, key: crypto.randomUUID() });
+  await tx.done;
+}
+export async function queueDelete(owner: number, items: Item[]) {
+  const tx = (await db()).transaction(["state", "queue"], "readwrite");
+  if ((await tx.objectStore("state").get("active")) !== owner)
+    throw new AccountChanged();
+  const queue = tx.objectStore("queue");
+  const resolved = await Promise.all(
+    items.map(async (item) => {
+      if (item.id < localIdStart) return item;
+      const draft = await queue.get(item.id - localIdStart);
+      if (!draft || draft.owner !== owner || draft.entry.type === "delete")
+        throw Error("Record just finished syncing. Select it again.");
+      return { ...item, source: { key: draft.key, entry: draft.entry } };
+    }),
+  );
+  await queue.add({
+    owner,
+    key: crypto.randomUUID(),
+    entry: { type: "delete", items: resolved },
+  });
   await tx.done;
 }
 export async function forget(owner: number) {
@@ -92,6 +131,34 @@ export async function syncLedger(owner: number, activate = false) {
     // Keep drafts until the refreshed server ledger and their acknowledgements
     // can be committed together. Lost responses are safe to replay.
     for (const draft of drafts) {
+      if (draft.entry.type === "delete") {
+        const items = [];
+        for (const item of draft.entry.items) {
+          let id = item.id;
+          if (item.source) {
+            const replay = await fetch("/api/data", {
+              method: "POST",
+              headers: {
+                ...headers,
+                "Content-Type": "application/json",
+                "Idempotency-Key": item.source.key,
+              },
+              body: JSON.stringify(item.source.entry),
+            });
+            await checked(replay);
+            id = (await replay.json()).record.id;
+          }
+          items.push({ type: item.type, id });
+        }
+        const res = await fetch("/api/data", {
+          method: "DELETE",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+          signal: AbortSignal.timeout(18000),
+        });
+        await checked(res);
+        continue;
+      }
       const r = await fetch("/api/data", {
         method: "POST",
         headers: {
@@ -125,10 +192,11 @@ export async function syncLedger(owner: number, activate = false) {
     await tx.done;
   });
 }
+export const sender = Math.random().toString(36);
 export function announce() {
   if (typeof BroadcastChannel !== "undefined") {
     const channel = new BroadcastChannel("watertracker-device");
-    channel.postMessage("changed");
+    channel.postMessage(sender);
     channel.close();
   }
 }

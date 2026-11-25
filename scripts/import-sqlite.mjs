@@ -28,8 +28,8 @@ try {
       let id;
       if (user.email === "admin@sfk.com") {
         const admin = await client.query(
-          "UPDATE delivery_expense.users SET theme=$1,threshold=$2,recovery=$3 WHERE email=$4 RETURNING id",
-          [user.theme, user.threshold, user.recovery, user.email],
+          "UPDATE delivery_expense.users SET theme=$1,threshold=$2,recovery=$3 WHERE admin RETURNING id",
+          [user.theme, user.threshold, user.recovery],
         );
         id = admin.rows[0].id;
       } else {

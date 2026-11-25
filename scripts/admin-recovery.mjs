@@ -5,8 +5,8 @@ await client.connect();
 try {
   const key = randomBytes(20).toString("hex");
   const result = await client.query(
-    "UPDATE delivery_expense.users SET recovery=$1 WHERE email=$2",
-    [createHash("sha256").update(key).digest("hex"), "admin@sfk.com"],
+    "UPDATE delivery_expense.users SET recovery=$1 WHERE admin",
+    [createHash("sha256").update(key).digest("hex")],
   );
   if (!result.rowCount) throw Error("Initialize the admin account first.");
   console.log("Store this new single-use recovery key privately.\n" + key);

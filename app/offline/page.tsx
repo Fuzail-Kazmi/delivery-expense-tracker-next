@@ -10,9 +10,16 @@ export default function OfflinePage() {
   useEffect(() => {
     (async () => {
       const owner = await activeOwner();
+      const hint = document.cookie.match(/(?:^|; )water_profile=(\d+)/)?.[1];
+      if (navigator.onLine && owner && hint && Number(hint) !== owner) {
+        location.replace("/dashboard?verify=1");
+        return;
+      }
       const cached = owner ? await savedLedger(owner) : null;
       const route =
-        new URLSearchParams(location.search).get("view") || "dashboard";
+        new URLSearchParams(location.search).get("view") ||
+        location.pathname.slice(1) ||
+        "dashboard";
       const page = (
         [
           "dashboard",
@@ -22,6 +29,7 @@ export default function OfflinePage() {
           "ledger",
           "reports",
           "settings",
+          "users",
         ].includes(route)
           ? route
           : "dashboard"

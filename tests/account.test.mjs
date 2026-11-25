@@ -67,7 +67,7 @@ test("authenticated ledger, threshold alerts, theme, isolation and recovery", as
       headers: { cookie, "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
     });
-  const session = (r) => r.headers.get("set-cookie").split(";")[0];
+  const session = (r) => r.headers.getSetCookie().map(c=>c.split(";")[0]).join("; ");
   assert.equal((await call("/api/data")).status, 401);
   const a = await call("/api/auth/signin", {
     email: "admin@sfk.com",

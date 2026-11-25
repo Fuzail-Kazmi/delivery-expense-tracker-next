@@ -27,13 +27,19 @@ try {
   }
   const salt = randomBytes(16).toString("hex");
   await client.query(
-    `INSERT INTO ${schema}.users(email,password) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+    `INSERT INTO ${schema}.users(email,password,admin) SELECT $1,$2,true WHERE NOT EXISTS(SELECT 1 FROM ${schema}.users WHERE admin) ON CONFLICT(email) DO UPDATE SET admin=true`,
     [
       "admin@sfk.com",
       salt +
         "." +
         scryptSync(process.env.ADMIN_PASSWORD, salt, 64).toString("hex"),
     ],
+  );
+  await client.query(
+    `UPDATE ${schema}.users SET username=CASE WHEN admin THEN 'admin' ELSE 'user_'||id::text END WHERE username IS NULL AND NOT EXISTS(SELECT 1 FROM ${schema}.config WHERE key='legacy_usernames_v1')`,
+  );
+  await client.query(
+    `INSERT INTO ${schema}.config VALUES('legacy_usernames_v1','done') ON CONFLICT DO NOTHING`,
   );
   await client.query("COMMIT");
   console.log("Ledger schema ready:", schema);

@@ -14,7 +14,11 @@ Date ranges include both endpoints. The opening balance carries earlier transact
 
 Sign in online and keep the dashboard open until **Ready for offline use** appears. Optionally use your browser's **Add to Home Screen** or **Install app** command. Open the same site or installed app on that device when offline. You can read the saved ledger, view balances and reports, and add deliveries, payments and prices. Each new entry immediately updates the local balance. The pending count shows how many entries still need to reach Neon.
 
-Keep the browser's site data until the pending count clears. The app syncs on reconnection, reopening and return to the foreground. Browsers that support Background Sync can also upload while the app is closed. Expired sessions require signing back into the same account. Editing or deleting existing records, account changes, and sign-out require a connection. Sign-out removes that account's cached ledger from the device.
+Keep the browser's site data until the pending count clears. The app syncs on reconnection, reopening and return to the foreground. Browsers that support Background Sync can also upload while the app is closed. Expired sessions require signing back into the same account. Confirmed deletions also sync from the offline queue. Editing existing records, account changes, and sign-out require a connection. Sign-out removes that account's cached ledger from the device.
+
+## Account management
+
+Administrators can create personal ledger accounts in Users. Sign in with either the username or email address. Settings supports changing email or password after confirming the current password. Other sessions are revoked on either change. Account management requires an internet connection.
 
 ## Install and deploy
 

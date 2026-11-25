@@ -7,6 +7,7 @@ import {
   forget,
   AccountChanged,
   announce,
+  sender,
   type Snapshot,
 } from "@/lib/offline";
 
@@ -47,9 +48,12 @@ export function useDeviceLedger(
       } catch (e) {
         if (!alive.current) return;
         if (e instanceof AccountChanged) {
+          const unsynced = (await savedLedger(owner))?.pending;
           await forget(owner);
           announce();
-          location.replace("/signin?reason=sync");
+          location.replace(
+            unsynced ? "/signin?reason=sync" : "/dashboard?verify=1",
+          );
           return;
         }
         setIssue("Sync paused. Your saved entries stay on this device.");
@@ -84,9 +88,9 @@ export function useDeviceLedger(
       }
       const loaded = await readLocal();
       if (cancelled) return;
+      booted = true;
       if (navigator.onLine) await reload(!cachedShell);
       else if (!loaded) failed();
-      booted = true;
     };
     void start().catch(() => {
       if (!cancelled) failed();
@@ -123,7 +127,8 @@ export function useDeviceLedger(
         ? new BroadcastChannel("watertracker-device")
         : null;
     if (channel)
-      channel.onmessage = () => {
+      channel.onmessage = (event) => {
+        if (event.data === sender) return;
         if (booted)
           void activeOwner().then((active) => {
             if (active !== owner) location.replace("/signin");
